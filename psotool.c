@@ -97,10 +97,10 @@ static u32 check_crc(u8 *d, int len)
 	// it looks like game have copy&paste bug, guild file CRC uses same range as main data
 	if (len > 0x16fc) // looks like it's guild file, need to fix lenght
 	{
-		if (data[3] == 0x2f)
-			len = 0x1550; // V1
-		else
+		if (data[4] == '2')
 			len = 0x16fc; // V2
+		else
+			len = 0x1550; // V1
 	}
 	u32 ocrc = *(u32*)d;
 	*(u32*)d = 0;
@@ -186,13 +186,9 @@ u32 brute(u8* dptr, u32 dsize)
 	u32 kk = 0, k = 0;
 	u8* buf = malloc(dsize);
 
-	u32 ver = -1;
-	if (dsize == 0x16fc)
-		ver = 1;
-	else if (dsize == 0x1550)
-		ver = 0;
+	const int ver = (data[4] == '2') ? 1 : 0;
 
-	if (ver != -1) // main file
+	if (dsize <= 0x16fc) // main file
 	{
 		for (int idx1 = 0; idx1 < PRIME_IDX1_LEN; idx1++)
 		{
@@ -207,6 +203,7 @@ u32 brute(u8* dptr, u32 dsize)
 					}
 
 					pso_decrypt(buf, dptr, dsize, sn);
+
 					if (*(u32*)&buf[0x340] == 0 && *(u32*)&buf[0x344] == 0 && *(u32*)&buf[0x348] == 0) // a bit hacky but makes things faster
 					{
 						u32 crcres = check_crc(buf, dsize);
@@ -238,35 +235,33 @@ u32 brute(u8* dptr, u32 dsize)
 			{
 				for (int r = 0; r < 30 * 3; r += 30)
 				{
-					for (int ver = 0; ver < 2; ver++) // ver is not known for guild data
-					{
-						u32 sn = primes[PRIME_IDX0 + ver + r] * primes[idx1 + PRIME_IDX1] * primes[idx2 + PRIME_IDX2];
-						for (u32 i = 0; i < 32; i += 4) {
-							sn = (sn & ~(0xf << i)) |
-								num_to_sn[(sn >> i) & 0xf] << i;
-						}
-
-						pso_decrypt(buf, dptr, dsize, sn);
-						if (*(u32*)&buf[0x340] == 0 && *(u32*)&buf[0x344] == 0 && *(u32*)&buf[0x348] == 0) // FIXME not confirmed for well used guild data
-						{
-							u32 crcres = check_crc(buf, dsize);
-							if (crcres) {
-								printf("Key found: %08X\n", sn);
-								free(buf);
-								return sn;
-							}
-							else
-								printf("Possible key %08X\n", sn);
-						}
-						time_t newt;
-						time(&newt);
-						if (difftime(newt, t) >= 10.) {
-							printf("checking %02d%% kps %d\n", (k * 100) / (PRIME_IDX1_LEN*PRIME_IDX2_LEN * 3 * 2), (k - kk) / 10);
-							t = newt;
-							kk = k;
-						}
-						k++;
+					u32 sn = primes[PRIME_IDX0 + ver + r] * primes[idx1 + PRIME_IDX1] * primes[idx2 + PRIME_IDX2];
+					for (u32 i = 0; i < 32; i += 4) {
+						sn = (sn & ~(0xf << i)) |
+							num_to_sn[(sn >> i) & 0xf] << i;
 					}
+
+					pso_decrypt(buf, dptr, dsize, sn);
+
+					if (*(u32*)&buf[0x70] == 0 && *(u32*)&buf[0x74] == 0 && *(u32*)&buf[0x78] == 0) // looks OK
+					{
+						u32 crcres = check_crc(buf, dsize);
+						if (crcres) {
+							printf("Key found: %08X\n", sn);
+							free(buf);
+							return sn;
+						}
+						else
+							printf("Possible key %08X\n", sn);
+					}
+					time_t newt;
+					time(&newt);
+					if (difftime(newt, t) >= 10.) {
+						printf("checking %02d%% kps %d\n", (k * 100) / (PRIME_IDX1_LEN*PRIME_IDX2_LEN * 3), (k - kk) / 10);
+						t = newt;
+						kk = k;
+					}
+					k++;
 				}
 			}
 		}
@@ -391,7 +386,7 @@ static void Crypt_Xor(u32 *key, u32 *data, int len)
 			MixKeys(key);
 			*key = 1;
 		}
-		data[i] = key[*key + 1] ^ data[i];
+		data[i] ^= key[*key + 1];
 	}
 	return;
 }
