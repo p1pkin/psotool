@@ -13,7 +13,11 @@ u8 *data;
 int size;
 
 /////////////////////
-static u32 keys[58];
+typedef struct {
+	u32 idx;
+	u32 keys[57];
+} PSO_KEY;
+static PSO_KEY pso_key;
 static u8 shuffle_encrypt[256];
 static u8 shuffle_decrypt[256];
 
@@ -272,155 +276,115 @@ u32 brute(u8* dptr, u32 dsize)
 
 //////////////////////////////// Crypto stuff
 
-static void MixKeys(u32 *key)
+static inline void MixKeys(PSO_KEY *key)
 {
-	for (int i = 1; i < 25; i++) {
-		key[i + 1] -= key[i + 32];
-	}
-	for (int i = 25; i < 56; i++) {
-		key[i + 1] -= key[i - 23];
-	}
-	return;
+	for (int i = 1; i < 25; i++)
+		key->keys[i] -= key->keys[i + 31];
+	for (int i = 25; i < 56; i++)
+		key->keys[i] -= key->keys[i - 24];
 }
 
-static u32 GetNextKey(u32 *key)
+static inline u32 GetNextKey(PSO_KEY *key)
 {
-	u32 posn = *key;
-	*key = posn + 1;
-	if (55 < (int)(posn + 1)) {
-		for (int i = 1; i < 25; i++) {
-			key[i + 1] -=key[i + 32];
-		}
-		for (int i = 25; i < 56; i++) {
-			key[i + 1] -=key[i - 23];
-		}
-		*key = 1;
+	key->idx++;
+	if (key->idx > 55) {
+		MixKeys(key);
+		key->idx = 1;
 	}
-	return key[*key + 1];
+	return key->keys[key->idx];
 }
 
-static void GenerateKeys(u32 *key, u32 seed)
+static void GenerateKeys(PSO_KEY *key, u32 seed)
 {
 	u32 new_seed = 1;
-	key[57] = seed;
-	key[56] = seed;
+	key->keys[55] = key->keys[56] = seed;
 	for (int i = 1; i < 55; i++) {
 		int idx = (i * 21) % 55;
-		key[idx + 1] = new_seed;
+		key->keys[idx] = new_seed;
 		new_seed = seed - new_seed;
-		seed = key[idx + 1];
+		seed = key->keys[idx];
 	}
 	MixKeys(key);
 	MixKeys(key);
 	MixKeys(key);
 	MixKeys(key);
-	*key = 55;
-	return;
+	key->idx = 55;
 }
 
-static void CreateShuffleTables(u32 *data)
+static void CreateShuffleTables(PSO_KEY *key)
 {
-	for (int i = 0; i < 0x100; i++) {
+	for (int i = 0; i < 0x100; i++)
 		shuffle_encrypt[i] = (u8)i;
-	}
-	for (int i = 0xff; -1 < i; i--) {
-		u32 posn = *data;
-		*data = posn + 1;
-		if (55 < (int)(posn + 1)) {
-			MixKeys(data);
-			*data = 1;
-		}
-		u32 new_idx = ((data[*data + 1] >> 16) * (i + 1)) >> 16;
+
+	for (int i = 0xff; i > -1; i--) {
+		u32 new_idx = ((GetNextKey(key) >> 16) * (i + 1)) >> 16;
 		u8 idx = shuffle_encrypt[new_idx];
 		shuffle_encrypt[new_idx] = shuffle_encrypt[i];
 		shuffle_encrypt[i] = idx;
 		shuffle_decrypt[idx] = (u8)i;
 	}
-	return;
 }
 
 static void Decrypt_Shuffle(u8 *from, u8 *to, int len)
 {
 	memcpy(to, from, len);
-	for (int i = 0; i < (len / 0x100); i++) {
-		for (int j = 0; j < 0x100; j++) {
+	for (int i = 0; i < (len / 0x100); i++)
+		for (int j = 0; j < 0x100; j++)
 			to[i * 0x100 + shuffle_decrypt[j]] = from[i * 0x100 + j];
-		}
-	}
-	return;
 }
 
 static void Encrypt_Shuffle(u8 *from, u8 *to, int len)
 {
 	memcpy(to, from, len);
-	for (int i = 0; i < (len / 0x100); i++) {
-		for (int j = 0; j < 0x100; j++) {
+	for (int i = 0; i < (len / 0x100); i++)
+		for (int j = 0; j < 0x100; j++)
 			to[i * 0x100 + shuffle_encrypt[j]] = from[i * 0x100 + j];
-		}
-	}
-	return;
 }
 
-static void Crypt_Subtract(u32 *key, u32 *data, int len)
+static void Crypt_Subtract(PSO_KEY *key, u32 *data, int len)
 {
 	int nlen = (len + 3) / 4;
-	for (int i = 0; i < nlen; i++) {
-		u32 posn = *key;
-		*key = posn + 1;
-		if (55 < (int)(posn + 1)) {
-			MixKeys(key);
-			*key = 1;
-		}
-		data[i] = key[*key + 1] - data[i];
-	}
-	return;
+	for (int i = 0; i < nlen; i++)
+		data[i] = GetNextKey(key) - data[i];
 }
 
-static void Crypt_Xor(u32 *key, u32 *data, int len)
+static void Crypt_Xor(PSO_KEY *key, u32 *data, int len)
 {
 	int nlen = (len + 3) / 4;
-	for (int i = 0; i < nlen; i++) {
-		u32 posn = *key;
-		*key = posn + 1;
-		if (55 < (int)(posn + 1)) {
-			MixKeys(key);
-			*key = 1;
-		}
-		data[i] ^= key[*key + 1];
-	}
-	return;
+	for (int i = 0; i < nlen; i++)
+		data[i] ^= GetNextKey(key);
 }
 
-void pso_encrypt(u8* dst, u8* data, u32 length, u32 key)
+void pso_encrypt(u8* dst, u8* data, u32 length, u32 sn)
 {
 	u32 gameSN[2];
-	gameSN[0] = gameSN[1] = key;
+	gameSN[0] = gameSN[1] = sn;
 
 	u8 *buf = malloc(length);
 	memcpy(buf, data, length);
 
-	GenerateKeys(keys, *(u32*)&buf[length - 4]);
-	Crypt_Xor(keys, (u32*)buf, length - 4);
-	GenerateKeys(keys, gameSN[0]);
-	Crypt_Subtract(keys, (u32*)buf, length);
-	GenerateKeys(keys, gameSN[1]);
-	CreateShuffleTables(keys);
+	GenerateKeys(&pso_key, *(u32*)&buf[length - 4]);
+	Crypt_Xor(&pso_key, (u32*)buf, length - 4);
+	GenerateKeys(&pso_key, gameSN[0]);
+	Crypt_Subtract(&pso_key, (u32*)buf, length);
+	GenerateKeys(&pso_key, gameSN[1]);
+	CreateShuffleTables(&pso_key);
 	Encrypt_Shuffle(buf, dst, length);
 	free(buf);
 }
 
-void pso_decrypt(u8*dst, u8* data, u32 length, u32 key)
+void pso_decrypt(u8*dst, u8* data, u32 length, u32 sn)
 {
 	u32 gameSN[2];
-	gameSN[0] = gameSN[1] = key;
+	gameSN[0] = gameSN[1] = sn;
 
-	GenerateKeys(keys, gameSN[1]);
-	CreateShuffleTables(keys);
+	GenerateKeys(&pso_key, gameSN[1]);
+	CreateShuffleTables(&pso_key);
 	Decrypt_Shuffle(data, dst, length);
-	GenerateKeys(keys, gameSN[0]);
-	Crypt_Subtract(keys, (u32*)dst, length);
-	GenerateKeys(keys, *(u32*)&dst[length - 4]);
-	Crypt_Xor(keys, (u32*)dst, length - 4);
+	GenerateKeys(&pso_key, gameSN[0]);
+	Crypt_Subtract(&pso_key, (u32*)dst, length);
+	GenerateKeys(&pso_key, *(u32*)&dst[length - 4]);
+	Crypt_Xor(&pso_key, (u32*)dst, length - 4);
 }
 
 /////////////////////////////////////////
